@@ -3,6 +3,9 @@ set -e
 
 mkdir -p /workspace/_deps && cd /workspace/_deps
 
+apt update
+apt install -y wget
+
 url="https://sourceforge.net/projects/boost/files/boost/1.85.0/boost_1_85_0.tar.gz/download"
 wget -O boost_1_85_0.tar.gz $url
 tar xvf boost_1_85_0.tar.gz
@@ -16,8 +19,8 @@ options="toolset=gcc variant=release link=static runtime-link=static threading=m
 ./b2 --with-python $options -j2 install
 cd ..
 
-apt update
-apt install -y \
+apt-get update
+apt-get install -y \
   cmake \
   git \
   pkg-config \
