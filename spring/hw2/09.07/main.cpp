@@ -1,3 +1,18 @@
+// Оригинальный Pimpl: Implementation хранится в куче по указателю.
+// Накладные расходы: отдельная аллокация на каждый Entity (вызов malloc,
+// возможные блокировки в аллокаторе, фрагментация кучи), косвенность при
+// каждом доступе (cache miss из-за того, что Implementation лежит вдали от Entity),
+// копирование требует ещё одной пары new/delete, ctor может бросить
+// bad_alloc. Move дешёвый (swap указателей), но это единственная операция
+// без накладных расходов.
+//
+// Здесь Implementation живёт внутри Entity в выровненном std::array<std::byte, 16>:
+// нет аллокаций, Implementation лежит рядом с Entity (cache-friendly), ctor noexcept.
+// Платим размером Entity (фиксирован на этапе компиляции через
+// static_assert) и тем, что при изменении layout Implementation придётся
+// пересобирать клиентов Entity — теряется главное свойство Pimpl, изоляция
+// зависимостей по компиляции.
+
 #include <array>
 #include <bit>
 #include <cassert>
@@ -30,12 +45,11 @@ class Entity {
 
   Entity& operator=(Entity&& other) noexcept {
     if (this != &other) {
-      *get() = std::move(*other.get());
+      std::destroy_at(get());
+      new (storage_.data()) Implementation(std::move(*other.get()));
     }
     return *this;
   }
-
-  void test() const { get()->test(); }
 
   Implementation* get() {
     auto raw = std::bit_cast<Implementation*>(storage_.data());
@@ -67,16 +81,16 @@ class Entity {
 int main() {
   Entity first;
   assert(first.get()->sum() == 3);
-  first.test();
+  first.get()->test();
 
   Entity second(std::move(first));
   assert(second.get()->sum() == 3);
-  second.test();
+  second.get()->test();
 
   Entity third;
   third = std::move(second);
   assert(third.get()->sum() == 3);
-  third.test();
+  third.get()->test();
 
   return 0;
 }

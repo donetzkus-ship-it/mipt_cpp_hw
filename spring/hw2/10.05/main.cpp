@@ -1,8 +1,11 @@
-#include <algorithm>
+// Форма кривых: для равномерно распределённого 32-битного хэша ожидаемое
+// число коллизий при N строках ~ N^2 / (2 * 2^32). Значит, в идеальном случае
+// зависимость близка к квадратичной от размера выборки. Отклонения вверх
+// от теоретической кривой = смещение распределения конкретной хэш-функции
+// (кластеризация значений). Построю лог график чтобы не слипались линии.
+
 #include <array>
 #include <cstdint>
-#include <functional>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -114,49 +117,22 @@ struct HashEntry {
   HashFunction function;
 };
 
-struct Measurement {
-  std::string name;
-  std::size_t sample_size = 0;
-  std::size_t collisions = 0;
-};
-
-std::string random_string(std::default_random_engine& engine,
-                          std::uniform_int_distribution<int>& length_dist,
-                          std::uniform_int_distribution<int>& char_dist) {
-  const int length = length_dist(engine);
-  std::string value(static_cast<std::size_t>(length), 'a');
-  for (char& ch : value) {
-    ch = static_cast<char>('a' + char_dist(engine));
-  }
-  return value;
-}
-
 std::vector<std::string> make_dataset(std::size_t count) {
-  std::default_random_engine engine(42U + static_cast<unsigned>(count));
+  std::default_random_engine engine(42U);
   std::uniform_int_distribution<int> length_dist(8, 32);
   std::uniform_int_distribution<int> char_dist(0, 25);
 
   std::vector<std::string> values;
   values.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
-    values.push_back(random_string(engine, length_dist, char_dist));
+    const int length = length_dist(engine);
+    std::string value(static_cast<std::size_t>(length), 'a');
+    for (char& ch : value) {
+      ch = static_cast<char>('a' + char_dist(engine));
+    }
+    values.push_back(std::move(value));
   }
   return values;
-}
-
-std::size_t count_collisions(const std::vector<std::string>& values,
-                             HashFunction function) {
-  std::unordered_set<std::uint32_t> seen;
-  std::size_t collisions = 0;
-
-  for (const std::string& value : values) {
-    const std::uint32_t hash = function(value);
-    if (!seen.insert(hash).second) {
-      ++collisions;
-    }
-  }
-
-  return collisions;
 }
 
 int main() {
@@ -166,19 +142,35 @@ int main() {
       {"DJB", djb_hash}, {"DEK", dek_hash}, {"AP", ap_hash},
   }};
 
-  const std::vector<std::size_t> sample_sizes = {10000, 25000, 50000, 100000,
-                                                 250000};
-  std::vector<Measurement> measurements;
-  measurements.reserve(functions.size() * sample_sizes.size());
+  const std::vector<std::size_t> checkpoints = {10000,  25000,  50000, 100000,
+                                                250000, 1000000};
+  const std::size_t max_size = checkpoints.back();
+  const std::vector<std::string> dataset = make_dataset(max_size);
 
   std::cout << "hash_function,sample_size,collisions\n";
-  for (std::size_t sample_size : sample_sizes) {
-    const std::vector<std::string> dataset = make_dataset(sample_size);
-    for (const auto& entry : functions) {
-      const std::size_t collisions = count_collisions(dataset, entry.function);
-      measurements.push_back({entry.name, sample_size, collisions});
-      std::cout << entry.name << ',' << sample_size << ',' << collisions << '\n';
+
+  std::vector<std::size_t> final_collisions(functions.size(), 0);
+
+  for (std::size_t fi = 0; fi < functions.size(); ++fi) {
+    const HashEntry& entry = functions[fi];
+    std::unordered_set<std::uint32_t> seen;
+    seen.reserve(max_size);
+    std::size_t collisions = 0;
+    std::size_t next_checkpoint = 0;
+
+    for (std::size_t i = 0; i < dataset.size(); ++i) {
+      const std::uint32_t hash = entry.function(dataset[i]);
+      if (!seen.insert(hash).second) {
+        ++collisions;
+      }
+      if (next_checkpoint < checkpoints.size() &&
+          i + 1 == checkpoints[next_checkpoint]) {
+        std::cout << entry.name << ',' << checkpoints[next_checkpoint] << ','
+                  << collisions << '\n';
+        ++next_checkpoint;
+      }
     }
+    final_collisions[fi] = collisions;
   }
 
   std::size_t best_score = std::numeric_limits<std::size_t>::max();
@@ -186,28 +178,21 @@ int main() {
   std::string best_name;
   std::string worst_name;
 
-  for (const auto& entry : functions) {
-    std::size_t total = 0;
-    for (const auto& measurement : measurements) {
-      if (measurement.name == entry.name) {
-        total += measurement.collisions;
-      }
+  for (std::size_t fi = 0; fi < functions.size(); ++fi) {
+    if (final_collisions[fi] < best_score) {
+      best_score = final_collisions[fi];
+      best_name = functions[fi].name;
     }
-
-    if (total < best_score) {
-      best_score = total;
-      best_name = entry.name;
-    }
-    if (total > worst_score) {
-      worst_score = total;
-      worst_name = entry.name;
+    if (final_collisions[fi] > worst_score) {
+      worst_score = final_collisions[fi];
+      worst_name = functions[fi].name;
     }
   }
 
-  std::cout << "best=" << best_name << " total_collisions=" << best_score
-            << '\n';
-  std::cout << "worst=" << worst_name << " total_collisions=" << worst_score
-            << '\n';
+  std::cout << "best=" << best_name << " collisions_at_" << max_size << '='
+            << best_score << '\n';
+  std::cout << "worst=" << worst_name << " collisions_at_" << max_size << '='
+            << worst_score << '\n';
 
   return 0;
 }
